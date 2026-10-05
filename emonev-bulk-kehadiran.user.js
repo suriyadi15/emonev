@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         eMonev Bulk Kehadiran
 // @namespace    auto-emonev
-// @version      1.1.0
+// @version      1.1.1
 // @description  Bulk submit kehadiran pegawai/staf dan struktural di eMonev: centang yang mau disubmit, kirim sekaligus.
 // @match        *://emonev.una.ac.id/gjm/kehadiran_pegawai*
 // @match        *://emonev.una.ac.id/gjm/kehadiran_struktural*
@@ -11,7 +11,7 @@
 
 (function () {
   'use strict';
-  console.info('[aeb] Bulk Kehadiran v1.1.0 dimuat di', location.href);
+  console.info('[aeb] Bulk Kehadiran v1.1.1 dimuat di', location.href);
   if (document.getElementById('aeb-fab')) return;
 
   // pegawai: daftar dikelola sendiri (localStorage), dikirim sebagai nama+unit
@@ -43,15 +43,18 @@
     dryRun: 'aeb:dryRun',
   };
 
-  // opsi status diambil dari form asli supaya nilainya pasti valid
+  // opsi status (value + label) diambil dari <select name="status"> di form asli supaya nilainya pasti valid
+  const STATUS_LABEL = {};
   const STATUSES = (() => {
-    const opts = [...document.querySelectorAll(`form ${M.formMarker}`)]
+    [...document.querySelectorAll(`form ${M.formMarker}`)]
       .map((el) => el.closest('form'))
       .flatMap((f) => [...f.querySelectorAll('select[name="status"] option')])
-      .map((o) => o.value)
-      .filter(Boolean);
-    return opts.length ? [...new Set(opts)] : M.fallbackStatuses;
+      .filter((o) => o.value)
+      .forEach((o) => (STATUS_LABEL[o.value] = o.textContent.trim() || o.value));
+    const opts = Object.keys(STATUS_LABEL);
+    return opts.length ? opts : M.fallbackStatuses;
   })();
+  const statusLabel = (v) => STATUS_LABEL[v] || v;
   const STRUKTURAL = [...document.querySelectorAll('select[name="struktural_id"] option')]
     .filter((o) => o.value)
     .map((o) => ({ id: o.value, nama: o.textContent.trim(), unit: '' }));
@@ -281,7 +284,7 @@
           <td>${i + 1}</td>
           <td>${esc(p.nama)}</td>
           ${isPegawai ? `<td>${esc(p.unit)}</td>` : ''}
-          <td><select data-f="status">${STATUSES.map((s) => `<option value="${s}" ${st.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
+          <td><select data-f="status">${STATUSES.map((s) => `<option value="${s}" ${st.status === s ? 'selected' : ''}>${esc(statusLabel(s))}</option>`).join('')}</select></td>
           <td><input type="number" min="0" style="width:70px" data-f="menit" value="${esc(st.menit)}" ${st.status === 'terlambat' ? '' : 'disabled'}></td>
           <td><input type="text" style="width:100%;min-width:120px" data-f="keterangan" value="${esc(st.keterangan)}"></td>
           <td>${r ? `<span class="${r.ok ? 'aeb-ok' : 'aeb-fail'}" title="${esc(r.msg)}">${r.ok ? '✓' : '✗'}</span> <span class="aeb-muted">${esc(r.msg).slice(0, 60)}</span>` : ''}</td>
@@ -296,7 +299,7 @@
         <label>Tanggal (semua): <input type="date" data-f="tanggal" value="${esc(tanggal)}"></label>
         <span style="margin-left:auto"></span>
         <label>Ubah semua status:
-          <select data-f="bulkStatus">${STATUSES.map((s) => `<option value="${s}">${s}</option>`).join('')}</select>
+          <select data-f="bulkStatus">${STATUSES.map((s) => `<option value="${s}">${esc(statusLabel(s))}</option>`).join('')}</select>
         </label>
         <button type="button" class="aeb-btn" data-act="applyAll">Terapkan</button>
       </div>
@@ -424,7 +427,7 @@
     const counts = {};
     list.forEach((p) => (counts[rs(p.id).status] = (counts[rs(p.id).status] || 0) + 1));
     const summary = Object.entries(counts)
-      .map(([s, n]) => `  ${s}: ${n}`)
+      .map(([s, n]) => `  ${statusLabel(s)}: ${n}`)
       .join('\n');
 
     if (dryRun) {
@@ -648,7 +651,7 @@
         log.length
           ? `<table class="aeb-table"><thead><tr><th>Waktu</th><th>Jenis</th><th>Tanggal</th><th>Nama / Jabatan</th><th>Unit</th><th>Status</th><th>Hasil</th></tr></thead><tbody>${log
               .map(
-                (l) => `<tr><td class="aeb-muted">${esc(new Date(l.at).toLocaleString('id-ID'))}</td><td>${esc(l.page || 'pegawai')}</td><td>${esc(l.tanggal)}</td><td>${esc(l.nama)}</td><td>${esc(l.unit)}</td><td>${esc(l.status)}</td>
+                (l) => `<tr><td class="aeb-muted">${esc(new Date(l.at).toLocaleString('id-ID'))}</td><td>${esc(l.page || 'pegawai')}</td><td>${esc(l.tanggal)}</td><td>${esc(l.nama)}</td><td>${esc(l.unit)}</td><td>${esc(statusLabel(l.status))}</td>
                 <td><span class="${l.ok ? 'aeb-ok' : 'aeb-fail'}">${l.ok ? '✓' : '✗'}</span> <span class="aeb-muted">${esc(l.msg)}</span></td></tr>`
               )
               .join('')}</tbody></table>`

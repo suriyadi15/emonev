@@ -1,25 +1,60 @@
 // ==UserScript==
-// @name         eMonev Bulk Kehadiran Pegawai
+// @name         eMonev Bulk Kehadiran
 // @namespace    auto-emonev
-// @version      1.0.0
-// @description  Simpan daftar pegawai di localStorage, centang yang mau disubmit, kirim kehadiran sekaligus.
-// @match        https://emonev.una.ac.id/gjm/kehadiran_pegawai.php*
+// @version      1.1.0
+// @description  Bulk submit kehadiran pegawai/staf dan struktural di eMonev: centang yang mau disubmit, kirim sekaligus.
+// @match        *://emonev.una.ac.id/gjm/kehadiran_pegawai*
+// @match        *://emonev.una.ac.id/gjm/kehadiran_struktural*
 // @grant        none
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
   'use strict';
+  console.info('[aeb] Bulk Kehadiran v1.1.0 dimuat di', location.href);
+  if (document.getElementById('aeb-fab')) return;
 
-  const STATUSES = ['hadir', 'terlambat', 'izin', 'tidak_hadir'];
+  // pegawai: daftar dikelola sendiri (localStorage), dikirim sebagai nama+unit
+  // struktural: daftar jabatan diambil dari <select name="struktural_id"> di halaman
+  const MODE = /kehadiran_struktural/i.test(location.pathname) ? 'struktural' : 'pegawai';
+  const MODES = {
+    pegawai: {
+      title: 'Bulk Kehadiran Pegawai',
+      fallbackStatuses: ['hadir', 'terlambat', 'izin', 'tidak_hadir'],
+      formMarker: '[name="nama"]',
+      selectionKey: 'aeb:lastSelection',
+      fields: (p) => ({ nama: p.nama, unit: p.unit }),
+    },
+    struktural: {
+      title: 'Bulk Kehadiran Struktural',
+      fallbackStatuses: ['hadir', 'terlambat', 'tidak_hadir'],
+      formMarker: '[name="struktural_id"]',
+      selectionKey: 'aeb:struktural:lastSelection',
+      fields: (p) => ({ struktural_id: p.id }),
+    },
+  };
+  const M = MODES[MODE];
   const DELAY_MS = 700;
   const LOG_LIMIT = 500;
   const KEY = {
     pegawai: 'aeb:pegawai',
-    selection: 'aeb:lastSelection',
+    selection: M.selectionKey,
     log: 'aeb:log',
     dryRun: 'aeb:dryRun',
   };
+
+  // opsi status diambil dari form asli supaya nilainya pasti valid
+  const STATUSES = (() => {
+    const opts = [...document.querySelectorAll(`form ${M.formMarker}`)]
+      .map((el) => el.closest('form'))
+      .flatMap((f) => [...f.querySelectorAll('select[name="status"] option')])
+      .map((o) => o.value)
+      .filter(Boolean);
+    return opts.length ? [...new Set(opts)] : M.fallbackStatuses;
+  })();
+  const STRUKTURAL = [...document.querySelectorAll('select[name="struktural_id"] option')]
+    .filter((o) => o.value)
+    .map((o) => ({ id: o.value, nama: o.textContent.trim(), unit: '' }));
 
   // ---------- storage ----------
   function load(key, fallback) {
@@ -50,15 +85,19 @@
   let lastResults = []; // [{id, ok, msg}]
   let editingId = null;
 
+  // daftar yang ditampilkan di tab Submit
+  function items() {
+    return MODE === 'struktural' ? STRUKTURAL : pegawai;
+  }
   function rs(id) {
-    if (!rowState[id]) rowState[id] = { status: 'hadir', menit: 0, keterangan: '' };
+    if (!rowState[id]) rowState[id] = { status: STATUSES.includes('hadir') ? 'hadir' : STATUSES[0], menit: 0, keterangan: '' };
     return rowState[id];
   }
   function persistPegawai() {
     save(KEY.pegawai, pegawai);
   }
   function persistSelection() {
-    save(KEY.selection, [...checked].filter((id) => pegawai.some((p) => p.id === id)));
+    save(KEY.selection, [...checked].filter((id) => items().some((p) => p.id === id)));
   }
   function uid() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -75,8 +114,8 @@
 
   // ---------- page integration ----------
   function findForm() {
-    const nama = document.querySelector('form input[name="nama"], form select[name="nama"]');
-    return nama ? nama.closest('form') : document.querySelector('input[name="csrf"]')?.closest('form') || null;
+    const marker = document.querySelector(`form ${M.formMarker}`);
+    return marker ? marker.closest('form') : document.querySelector('input[name="csrf"]')?.closest('form') || null;
   }
   function readCsrf(doc) {
     const el = doc.querySelector('input[name="csrf"]');
@@ -92,7 +131,7 @@
 
   function extractMessage(doc, html) {
     const parts = [];
-    doc.querySelectorAll('.alert, .swal2-title, .swal2-html-container, .toast-body').forEach((el) => {
+    doc.querySelectorAll('.flash, .alert, .swal2-title, .swal2-html-container, .toast-body').forEach((el) => {
       const t = el.textContent.trim().replace(/\s+/g, ' ');
       if (t) parts.push({ text: t, cls: el.className || '' });
     });
@@ -108,8 +147,7 @@
     const body = new URLSearchParams({
       csrf,
       tanggal,
-      nama: p.nama,
-      unit: p.unit,
+      ...M.fields(p),
       status: st.status,
       menit_terlambat: st.status === 'terlambat' ? String(Number(st.menit) || 0) : '0',
       keterangan: st.keterangan || '',
@@ -130,7 +168,7 @@
     const newCsrf = readCsrf(doc);
     const loggedOut =
       /\/auth\/login\.php/i.test(res.url) ||
-      (!!doc.querySelector('input[name="password"]') && !doc.querySelector('input[name="nama"]'));
+      (!!doc.querySelector('input[name="password"]') && !doc.querySelector(M.formMarker));
     if (loggedOut) return { ok: false, loggedOut: true, msg: 'Session habis, silakan login ulang' };
 
     const msgs = extractMessage(doc, html);
@@ -188,9 +226,9 @@
   panel.id = 'aeb-panel';
   panel.innerHTML = `
     <div class="aeb-head">
-      <h3>Bulk Kehadiran Pegawai</h3>
+      <h3>${M.title}</h3>
       <button type="button" class="aeb-tab aeb-active" data-tab="submit">Submit</button>
-      <button type="button" class="aeb-tab" data-tab="pegawai">Pegawai</button>
+      ${MODE === 'pegawai' ? '<button type="button" class="aeb-tab" data-tab="pegawai">Pegawai</button>' : ''}
       <button type="button" class="aeb-tab" data-tab="log">Log</button>
       <button type="button" class="aeb-btn" data-act="close" title="Tutup">✕</button>
     </div>
@@ -230,8 +268,10 @@
 
   function renderSubmit() {
     const csrf = readCsrf(document);
-    const allChecked = pegawai.length > 0 && pegawai.every((p) => checked.has(p.id));
-    const rows = pegawai
+    const list = items();
+    const isPegawai = MODE === 'pegawai';
+    const allChecked = list.length > 0 && list.every((p) => checked.has(p.id));
+    const rows = list
       .map((p, i) => {
         const st = rs(p.id);
         const on = checked.has(p.id);
@@ -240,7 +280,7 @@
           <td><input type="checkbox" data-f="check" ${on ? 'checked' : ''}></td>
           <td>${i + 1}</td>
           <td>${esc(p.nama)}</td>
-          <td>${esc(p.unit)}</td>
+          ${isPegawai ? `<td>${esc(p.unit)}</td>` : ''}
           <td><select data-f="status">${STATUSES.map((s) => `<option value="${s}" ${st.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
           <td><input type="number" min="0" style="width:70px" data-f="menit" value="${esc(st.menit)}" ${st.status === 'terlambat' ? '' : 'disabled'}></td>
           <td><input type="text" style="width:100%;min-width:120px" data-f="keterangan" value="${esc(st.keterangan)}"></td>
@@ -251,7 +291,7 @@
     const failedCount = lastResults.filter((r) => !r.ok).length;
 
     bodyEl.innerHTML = `
-      ${csrf ? '' : '<div class="aeb-warn">Token CSRF tidak ditemukan di halaman. Pastikan Anda sudah login dan berada di halaman Kehadiran Pegawai.</div>'}
+      ${csrf ? '' : '<div class="aeb-warn">Token CSRF tidak ditemukan di halaman. Pastikan Anda sudah login dan berada di halaman kehadiran.</div>'}
       <div class="aeb-row">
         <label>Tanggal (semua): <input type="date" data-f="tanggal" value="${esc(tanggal)}"></label>
         <span style="margin-left:auto"></span>
@@ -261,18 +301,20 @@
         <button type="button" class="aeb-btn" data-act="applyAll">Terapkan</button>
       </div>
       ${
-        pegawai.length === 0
-          ? '<p class="aeb-muted">Belum ada pegawai. Tambahkan di tab <b>Pegawai</b>.</p>'
+        list.length === 0
+          ? isPegawai
+            ? '<p class="aeb-muted">Belum ada pegawai. Tambahkan di tab <b>Pegawai</b>.</p>'
+            : '<p class="aeb-muted">Daftar jabatan (pilihan <code>struktural_id</code>) tidak ditemukan di halaman ini.</p>'
           : `<table class="aeb-table">
         <thead><tr>
           <th><input type="checkbox" data-f="checkAll" ${allChecked ? 'checked' : ''} title="Pilih semua"></th>
-          <th>#</th><th>Nama</th><th>Unit</th><th>Status</th><th>Menit telat</th><th>Keterangan</th><th>Hasil</th>
+          <th>#</th>${isPegawai ? '<th>Nama</th><th>Unit</th>' : '<th>Jabatan</th>'}<th>Status</th><th>Menit telat</th><th>Keterangan</th><th>Hasil</th>
         </tr></thead>
         <tbody>${rows}</tbody></table>`
       }
       <div class="aeb-row" style="margin-top:12px">
         <label><input type="checkbox" data-f="dryRun" ${dryRun ? 'checked' : ''}> Dry run (tidak mengirim)</label>
-        <span class="aeb-muted">Dicentang: <b>${countChecked()}</b> / ${pegawai.length}</span>
+        <span class="aeb-muted">Dicentang: <b>${countChecked()}</b> / ${list.length}</span>
         <div class="aeb-progress"><div style="width:${progress.total ? (progress.done / progress.total) * 100 : 0}%"></div></div>
         <span class="aeb-muted">${progress.total ? `${progress.done}/${progress.total}` : ''}</span>
         ${failedCount && !running ? `<button type="button" class="aeb-btn" data-act="retry">Ulangi yang gagal (${failedCount})</button>` : ''}
@@ -284,7 +326,7 @@
   }
 
   function countChecked() {
-    return pegawai.filter((p) => checked.has(p.id)).length;
+    return items().filter((p) => checked.has(p.id)).length;
   }
 
   bodyEl.addEventListener('change', (e) => {
@@ -300,7 +342,7 @@
         save(KEY.dryRun, dryRun);
         render();
       } else if (f === 'checkAll') {
-        pegawai.forEach((p) => (el.checked ? checked.add(p.id) : checked.delete(p.id)));
+        items().forEach((p) => (el.checked ? checked.add(p.id) : checked.delete(p.id)));
         persistSelection();
         render();
       } else if (f === 'check') {
@@ -329,13 +371,13 @@
     const id = tr && tr.dataset.id;
     if (act === 'applyAll') {
       const s = bodyEl.querySelector('[data-f="bulkStatus"]').value;
-      pegawai.forEach((p) => (rs(p.id).status = s));
+      items().forEach((p) => (rs(p.id).status = s));
       render();
     } else if (act === 'send') {
-      startSend(pegawai.filter((p) => checked.has(p.id)));
+      startSend(items().filter((p) => checked.has(p.id)));
     } else if (act === 'retry') {
       const failedIds = new Set(lastResults.filter((r) => !r.ok).map((r) => r.id));
-      startSend(pegawai.filter((p) => failedIds.has(p.id)));
+      startSend(items().filter((p) => failedIds.has(p.id)));
     } else if (act === 'stop') {
       stopRequested = true;
       btn.disabled = true;
@@ -392,16 +434,21 @@
         list
           .map((p, i) => {
             const st = rs(p.id);
-            return `${i + 1}. tanggal=${tanggal}&nama=${p.nama}&unit=${p.unit}&status=${st.status}&menit_terlambat=${st.status === 'terlambat' ? Number(st.menit) || 0 : 0}&keterangan=${st.keterangan || ''}`;
+            const f = Object.entries(M.fields(p)).map(([k, v]) => `${k}=${v}`).join('&');
+            const label = MODE === 'struktural' ? `  (${p.nama})` : '';
+            return `${i + 1}. tanggal=${tanggal}&${f}&status=${st.status}&menit_terlambat=${st.status === 'terlambat' ? Number(st.menit) || 0 : 0}&keterangan=${st.keterangan || ''}${label}`;
           })
           .join('\n');
       render();
       return;
     }
 
-    const dup = list.filter((p) => log.some((l) => l.ok && l.tanggal === tanggal && l.nama === p.nama && l.unit === p.unit));
-    let msg = `Kirim kehadiran tanggal ${tanggal} untuk ${list.length} pegawai?\n\n${summary}`;
-    if (dup.length) msg += `\n\nPERHATIAN: ${dup.length} pegawai sudah pernah sukses dikirim untuk tanggal ini:\n` + dup.map((p) => '  - ' + p.nama).join('\n');
+    const who = MODE === 'struktural' ? 'pejabat' : 'pegawai';
+    const dup = list.filter((p) =>
+      log.some((l) => l.ok && (l.page || 'pegawai') === MODE && l.tanggal === tanggal && l.nama === p.nama && (l.unit || '') === (p.unit || ''))
+    );
+    let msg = `Kirim kehadiran tanggal ${tanggal} untuk ${list.length} ${who}?\n\n${summary}`;
+    if (dup.length) msg += `\n\nPERHATIAN: ${dup.length} ${who} sudah pernah sukses dikirim untuk tanggal ini:\n` + dup.map((p) => '  - ' + p.nama).join('\n');
     if (!confirm(msg)) return;
 
     let csrf = readCsrf(document);
@@ -429,7 +476,7 @@
         if (pageCsrf) pageCsrf.value = r.csrf;
       }
       lastResults.push({ id: p.id, ok: r.ok, msg: r.msg });
-      log.unshift({ at: new Date().toISOString(), tanggal, nama: p.nama, unit: p.unit, status: st.status, ok: r.ok, msg: r.msg });
+      log.unshift({ at: new Date().toISOString(), page: MODE, tanggal, nama: p.nama, unit: p.unit, status: st.status, ok: r.ok, msg: r.msg });
       if (log.length > LOG_LIMIT) log.length = LOG_LIMIT;
       save(KEY.log, log);
       progress.done = i + 1;
@@ -599,9 +646,9 @@
         <button type="button" class="aeb-btn aeb-danger" data-act="clearLog" ${log.length ? '' : 'disabled'}>Hapus log</button></div>
       ${
         log.length
-          ? `<table class="aeb-table"><thead><tr><th>Waktu</th><th>Tanggal</th><th>Nama</th><th>Unit</th><th>Status</th><th>Hasil</th></tr></thead><tbody>${log
+          ? `<table class="aeb-table"><thead><tr><th>Waktu</th><th>Jenis</th><th>Tanggal</th><th>Nama / Jabatan</th><th>Unit</th><th>Status</th><th>Hasil</th></tr></thead><tbody>${log
               .map(
-                (l) => `<tr><td class="aeb-muted">${esc(new Date(l.at).toLocaleString('id-ID'))}</td><td>${esc(l.tanggal)}</td><td>${esc(l.nama)}</td><td>${esc(l.unit)}</td><td>${esc(l.status)}</td>
+                (l) => `<tr><td class="aeb-muted">${esc(new Date(l.at).toLocaleString('id-ID'))}</td><td>${esc(l.page || 'pegawai')}</td><td>${esc(l.tanggal)}</td><td>${esc(l.nama)}</td><td>${esc(l.unit)}</td><td>${esc(l.status)}</td>
                 <td><span class="${l.ok ? 'aeb-ok' : 'aeb-fail'}">${l.ok ? '✓' : '✗'}</span> <span class="aeb-muted">${esc(l.msg)}</span></td></tr>`
               )
               .join('')}</tbody></table>`
